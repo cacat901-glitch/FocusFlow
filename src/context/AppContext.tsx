@@ -18,6 +18,29 @@ import {
 import { triggerHapticFeedback } from '../utils/haptics';
 import { playBellNotification } from '../utils/audio';
 
+// Real Live Zero-Trust Firebase Configuration Import
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  getDocs, 
+  query, 
+  where, 
+  onSnapshot,
+  updateDoc,
+  deleteDoc,
+  writeBatch
+} from 'firebase/firestore';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut as firebaseSignOut,
+  sendPasswordResetEmail,
+  onAuthStateChanged
+} from 'firebase/auth';
+import { db, auth, OperationType, handleFirestoreError } from '../utils/firebase';
+
 // Custom Toast System to support beautiful toast feedback in frame view
 export interface CustomToast {
   id: string;
@@ -173,160 +196,199 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [achievements, setAchievements] = useState<Achievement[]>(DEFAULT_ACHIEVEMENTS);
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus>('free');
 
-  // Load Initial State from LocalStorage
+  // Load and subscribe in real-time to Cloud Firestore
   useEffect(() => {
-    const initStorage = () => {
-      try {
-        const storedUser = localStorage.getItem('focusflow_user');
-        const storedOnboarding = localStorage.getItem('focusflow_onboarding');
-        const storedStatus = localStorage.getItem('focusflow_subscription_status');
-        
-        if (storedOnboarding === 'completed') {
-          setOnboardingCompleted(true);
-        }
-        
-        if (storedUser) {
-          const parsedUser = JSON.parse(storedUser);
-          setUser(parsedUser);
-          
-          // Load Profile
-          const storedProfile = localStorage.getItem(`focusflow_profile_${parsedUser.email}`);
-          if (storedProfile) {
-            setProfile(JSON.parse(storedProfile));
-          } else {
-            const newProf: UserProfile = {
-              id: 'prof-uid',
-              user_id: 'user-uid',
-              display_name: parsedUser.email.split('@')[0],
-              avatar_emoji: '🧠',
-              total_xp: 0,
-              created_at: new Date().toISOString()
-            };
-            setProfile(newProf);
-            localStorage.setItem(`focusflow_profile_${parsedUser.email}`, JSON.stringify(newProf));
-          }
+    setLoading(true);
+    let unsubProfile: (() => void) | null = null;
+    let unsubRoutines: (() => void) | null = null;
+    let unsubTasks: (() => void) | null = null;
+    let unsubSessions: (() => void) | null = null;
+    let unsubStreak: (() => void) | null = null;
 
-          // Load Routines
-          const storedRoutines = localStorage.getItem(`focusflow_routines_${parsedUser.email}`);
-          if (storedRoutines) {
-            setRoutines(JSON.parse(storedRoutines));
-          } else {
-            const defRoutines = DEFAULT_ROUTINES(parsedUser.email);
-            setRoutines(defRoutines);
-            localStorage.setItem(`focusflow_routines_${parsedUser.email}`, JSON.stringify(defRoutines));
-          }
+    // Local onboarding read
+    const storedOnboarding = localStorage.getItem('focusflow_onboarding');
+    if (storedOnboarding === 'completed') {
+      setOnboardingCompleted(true);
+    }
 
-          // Load Tasks
-          const storedTasks = localStorage.getItem(`focusflow_tasks_${parsedUser.email}`);
-          if (storedTasks) {
-            setTasks(JSON.parse(storedTasks));
-          } else {
-            const defTasks = DEFAULT_TASKS(parsedUser.email);
-            setTasks(defTasks);
-            localStorage.setItem(`focusflow_tasks_${parsedUser.email}`, JSON.stringify(defTasks));
-          }
+    const unsubscribeAuth = onAuthStateChanged(auth, async (fbUser) => {
+      // Unsubscribe any stale snapshots
+      if (unsubProfile) unsubProfile();
+      if (unsubRoutines) unsubRoutines();
+      if (unsubTasks) unsubTasks();
+      if (unsubSessions) unsubSessions();
+      if (unsubStreak) unsubStreak();
 
-          // Load Sessions
-          const storedSessions = localStorage.getItem(`focusflow_sessions_${parsedUser.email}`);
-          if (storedSessions) {
-            setSessions(JSON.parse(storedSessions));
-          } else {
-            // Generate some dummy completed focus sessions for the stats page to look gorgeous originally
-            const todayStr = new Date();
-            const dummySessions: FocusSession[] = [];
-            for (let i = 6; i >= 0; i--) {
-              const d = new Date();
-              d.setDate(todayStr.getDate() - i);
-              const dateStr = d.toISOString().split('T')[0];
-              // Add random focus minutes (except today is logged on the fly)
-              const minutes = i === 0 ? 0 : Math.floor(Math.random() * 45) + 15;
-              if (minutes > 0) {
-                dummySessions.push({
-                  id: `dummy-focus-${i}`,
-                  user_id: parsedUser.email,
-                  duration_minutes: minutes,
-                  type: 'pomodoro',
-                  completed: true,
-                  created_at: `${dateStr}T10:00:00.000Z`
-                });
-              }
-            }
-            setSessions(dummySessions);
-            localStorage.setItem(`focusflow_sessions_${parsedUser.email}`, JSON.stringify(dummySessions));
-          }
-
-          // Load Streak
-          const storedStreak = localStorage.getItem(`focusflow_streak_${parsedUser.email}`);
-          if (storedStreak) {
-            setStreak(JSON.parse(storedStreak));
-          } else {
-            const defStreak: Streak = {
-              id: 'streak-uid',
-              user_id: parsedUser.email,
-              current_streak: 5, // Welcoming initial state to feel accomplished!
-              longest_streak: 12,
-              last_active_date: new Date().toISOString().split('T')[0],
-              updated_at: new Date().toISOString()
-            };
-            setStreak(defStreak);
-            localStorage.setItem(`focusflow_streak_${parsedUser.email}`, JSON.stringify(defStreak));
-          }
-
-          // Load Achievements configuration
-          const storedAchievements = localStorage.getItem(`focusflow_achievements_${parsedUser.email}`);
-          if (storedAchievements) {
-            setAchievements(JSON.parse(storedAchievements));
-          } else {
-            setAchievements(DEFAULT_ACHIEVEMENTS);
-          }
-        }
-        
-        if (storedStatus) {
-          setSubscriptionStatus(storedStatus as SubscriptionStatus);
-        } else {
-          setSubscriptionStatus('free');
-        }
-      } catch (e) {
-        console.error("Local storage initialization failed", e);
-      } finally {
+      if (!fbUser) {
+        setUser(null);
+        setProfile(null);
+        setRoutines([]);
+        setTasks([]);
+        setSessions([]);
+        setStreak(null);
+        setSubscriptionStatus('free');
         setLoading(false);
+        return;
       }
+
+      const uid = fbUser.uid;
+      const email = fbUser.email || '';
+      setUser({ email });
+
+      // Load/Listen User Profile in real time!
+      const profileRef = doc(db, 'users', uid);
+      try {
+        const profSnap = await getDoc(profileRef);
+        if (!profSnap.exists()) {
+          // Initialize complete brand new profile inside firestore!
+          const draftProfile: UserProfile = {
+            id: uid,
+            user_id: uid,
+            display_name: email.split('@')[0] || 'User',
+            avatar_emoji: '🧠',
+            total_xp: 0,
+            created_at: new Date().toISOString()
+          };
+          await setDoc(profileRef, draftProfile);
+        }
+      } catch (err) {
+        console.error("Profile check failed: ", err);
+      }
+
+      unsubProfile = onSnapshot(profileRef, (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as UserProfile;
+          setProfile(data);
+          setSubscriptionStatus((data as any).premium_status || 'free');
+        }
+      }, (err) => {
+        handleFirestoreError(err, OperationType.GET, `users/${uid}`);
+      });
+
+      // Load/Listen to Streaks collection logic
+      const streakRef = doc(db, 'streaks', uid);
+      try {
+        const streakSnap = await getDoc(streakRef);
+        if (!streakSnap.exists()) {
+          const newStreak: Streak = {
+            id: uid,
+            user_id: uid,
+            current_streak: 5, // Welcoming default!
+            longest_streak: 12,
+            last_active_date: new Date().toISOString().split('T')[0],
+            updated_at: new Date().toISOString()
+          };
+          await setDoc(streakRef, newStreak);
+        }
+      } catch (err) {
+        console.error("Streak check failed: ", err);
+      }
+
+      unsubStreak = onSnapshot(streakRef, (snap) => {
+        if (snap.exists()) {
+          setStreak(snap.data() as Streak);
+        }
+      }, (err) => {
+        handleFirestoreError(err, OperationType.GET, `streaks/${uid}`);
+      });
+
+      // Load/Listen tasks list where user_id == uid
+      const tasksQuery = query(collection(db, 'tasks'), where('user_id', '==', uid));
+      unsubTasks = onSnapshot(tasksQuery, (snap) => {
+        const tList: Task[] = [];
+        snap.forEach((doc) => {
+          tList.push(doc.data() as Task);
+        });
+        tList.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        setTasks(tList);
+      }, (err) => {
+        handleFirestoreError(err, OperationType.LIST, 'tasks');
+      });
+
+      // Load/Listen sessions list where user_id == uid
+      const sessionsQuery = query(collection(db, 'sessions'), where('user_id', '==', uid));
+      unsubSessions = onSnapshot(sessionsQuery, (snap) => {
+        const sList: FocusSession[] = [];
+        snap.forEach((doc) => {
+          sList.push(doc.data() as FocusSession);
+        });
+        sList.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        setSessions(sList);
+      }, (err) => {
+        handleFirestoreError(err, OperationType.LIST, 'sessions');
+      });
+
+      // Pre-seed template routines if database is fully empty
+      try {
+        const routinesSnap = await getDocs(query(collection(db, 'routines'), where('user_id', '==', uid)));
+        if (routinesSnap.empty) {
+          const defRoutines = DEFAULT_ROUTINES(uid);
+          for (const rot of defRoutines) {
+            const rotRef = doc(db, 'routines', rot.id);
+            const { steps, ...restRoutine } = rot;
+            await setDoc(rotRef, restRoutine);
+            // Add steps as subcollections
+            for (const step of steps) {
+              await setDoc(doc(db, 'routines', rot.id, 'steps', step.id), step);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Seeding routines failed:", err);
+      }
+
+      // Pre-seed template tasks if database is fully empty
+      try {
+        const tasksSnap = await getDocs(query(collection(db, 'tasks'), where('user_id', '==', uid)));
+        if (tasksSnap.empty) {
+          const defTasks = DEFAULT_TASKS(uid);
+          for (const task of defTasks) {
+            await setDoc(doc(db, 'tasks', task.id), task);
+          }
+        }
+      } catch (err) {
+        console.error("Seeding tasks failed:", err);
+      }
+
+      // Load/Listen routines list where user_id == uid
+      const routinesQuery = query(collection(db, 'routines'), where('user_id', '==', uid));
+      unsubRoutines = onSnapshot(routinesQuery, async (snap) => {
+        const routinesData = snap.docs.map(doc => doc.data() as Routine);
+        const routinesWithSteps = await Promise.all(routinesData.map(async (rot) => {
+          try {
+            const stepsColl = collection(db, 'routines', rot.id, 'steps');
+            const stepsSnap = await getDocs(stepsColl);
+            const steps: RoutineStep[] = [];
+            stepsSnap.forEach((sDoc) => {
+              steps.push(sDoc.data() as RoutineStep);
+            });
+            steps.sort((a, b) => a.order_index - b.order_index);
+            return { ...rot, steps };
+          } catch (e) {
+            console.error(`Error loading steps for routine ${rot.id}:`, e);
+            return { ...rot, steps: [] };
+          }
+        }));
+
+        setRoutines(routinesWithSteps);
+        setLoading(false);
+      }, (err) => {
+        handleFirestoreError(err, OperationType.LIST, 'routines');
+        setLoading(false);
+      });
+    });
+
+    return () => {
+      unsubscribeAuth();
+      if (unsubProfile) unsubProfile();
+      if (unsubRoutines) unsubRoutines();
+      if (unsubTasks) unsubTasks();
+      if (unsubSessions) unsubSessions();
+      if (unsubStreak) unsubStreak();
     };
+  }, []);
 
-    initStorage();
-  }, [user?.email]);
-
-  // Sync state helpers
-  const saveProfile = (newProf: UserProfile) => {
-    if (!user) return;
-    setProfile(newProf);
-    localStorage.setItem(`focusflow_profile_${user.email}`, JSON.stringify(newProf));
-  };
-
-  const saveRoutines = (newRoutines: Routine[]) => {
-    if (!user) return;
-    setRoutines(newRoutines);
-    localStorage.setItem(`focusflow_routines_${user.email}`, JSON.stringify(newRoutines));
-  };
-
-  const saveTasks = (newTasks: Task[]) => {
-    if (!user) return;
-    setTasks(newTasks);
-    localStorage.setItem(`focusflow_tasks_${user.email}`, JSON.stringify(newTasks));
-  };
-
-  const saveSessions = (newSessions: FocusSession[]) => {
-    if (!user) return;
-    setSessions(newSessions);
-    localStorage.setItem(`focusflow_sessions_${user.email}`, JSON.stringify(newSessions));
-  };
-
-  const saveStreak = (newStreak: Streak) => {
-    if (!user) return;
-    setStreak(newStreak);
-    localStorage.setItem(`focusflow_streak_${user.email}`, JSON.stringify(newStreak));
-  };
-
+  // Sync state helpers - achievements logic
   const saveAchievementsData = (newAchievements: Achievement[]) => {
     if (!user) return;
     setAchievements(newAchievements);
@@ -372,7 +434,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           unlockConditionMet = completedCount >= 50;
           break;
         case 'early_bird':
-          // Mocking condition count: check focus count or general morning completions
           const mockCompletionsLocalSet = parseInt(localStorage.getItem(`completion_count_morning_${user.email}`) || '0', 10);
           unlockConditionMet = mockCompletionsLocalSet >= 7;
           break;
@@ -386,7 +447,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (unlockConditionMet) {
         achievementsUpdated = true;
-        // Trigger rewards and celebratory cues!
         triggerHapticFeedback('success');
         playBellNotification('complete');
         showToast(
@@ -407,88 +467,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (achievementsUpdated) {
       saveAchievementsData(updatedAchievements);
       
-      // Award XP from unlocked achievements
       const newlyUnlockedRewardXp = updatedAchievements
         .filter((ach, idx) => ach.isUnlocked && !achievements[idx].isUnlocked)
         .reduce((sum, ach) => sum + ach.xpReward, 0);
         
       if (newlyUnlockedRewardXp > 0 && profile) {
-        const nextProfile = {
-          ...profile,
+        const profileRef = doc(db, 'users', profile.id);
+        updateDoc(profileRef, {
           total_xp: profile.total_xp + newlyUnlockedRewardXp
-        };
-        saveProfile(nextProfile);
+        }).catch((err) => handleFirestoreError(err, OperationType.UPDATE, `users/${profile.id}`));
       }
     }
   };
 
-  // Auth Functions
+  // Auth Functions - Linked directly to Firebase Authentication SDK
   const signIn = async (email: string, pass: string): Promise<string | null> => {
     setLoading(true);
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        if (!email.includes('@')) {
-          setLoading(false);
-          resolve('Invalid Email address format');
-          return;
-        }
-        if (pass.length < 6) {
-          setLoading(false);
-          resolve('Password must be at least 6 characters');
-          return;
-        }
-
-        const authenticatedUser = { email: email.trim().toLowerCase() };
-        setUser(authenticatedUser);
-        localStorage.setItem('focusflow_user', JSON.stringify(authenticatedUser));
-        triggerHapticFeedback('success');
-        setLoading(false);
-        resolve(null);
-      }, 700);
-    });
+    try {
+      await signInWithEmailAndPassword(auth, email.trim().toLowerCase(), pass);
+      triggerHapticFeedback('success');
+      setLoading(false);
+      return null;
+    } catch (err: any) {
+      console.error("SignIn error: ", err);
+      triggerHapticFeedback('error');
+      setLoading(false);
+      return err.message || 'Authorization failed';
+    }
   };
 
   const signUp = async (email: string, pass: string): Promise<string | null> => {
     setLoading(true);
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        if (!email.includes('@')) {
-          setLoading(false);
-          resolve('Invalid Email address format');
-          return;
-        }
-        if (pass.length < 8) {
-          setLoading(false);
-          resolve('Password must be at least 8 characters long');
-          return;
-        }
-
-        const authenticatedUser = { email: email.trim().toLowerCase() };
-        setUser(authenticatedUser);
-        localStorage.setItem('focusflow_user', JSON.stringify(authenticatedUser));
-        triggerHapticFeedback('success');
-        setLoading(false);
-        resolve(null);
-      }, 800);
-    });
+    try {
+      await createUserWithEmailAndPassword(auth, email.trim().toLowerCase(), pass);
+      triggerHapticFeedback('success');
+      setLoading(false);
+      return null;
+    } catch (err: any) {
+      console.error("SignUp error: ", err);
+      triggerHapticFeedback('error');
+      setLoading(false);
+      return err.message || 'Registration failed';
+    }
   };
 
-  const signOut = () => {
-    setUser(null);
-    setProfile(null);
-    setRoutines([]);
-    setTasks([]);
-    setSessions([]);
-    setStreak(null);
-    localStorage.removeItem('focusflow_user');
-    triggerHapticFeedback('medium');
-    showToast('info', 'Signed Out', 'You have been safely signed out. Keep focused!');
+  const signOut = async () => {
+    try {
+      await firebaseSignOut(auth);
+      triggerHapticFeedback('medium');
+      showToast('info', 'Signed Out', 'You have been safely signed out. Keep focused!');
+    } catch (err) {
+      console.error("SignOut error: ", err);
+    }
   };
 
   const resetPassword = async (email: string): Promise<boolean> => {
-    triggerHapticFeedback('light');
-    showToast('success', 'Reset Email Sent', `We sent a reset link to ${email}. Check your spam fold. `);
-    return true;
+    try {
+      await sendPasswordResetEmail(auth, email.trim().toLowerCase());
+      triggerHapticFeedback('light');
+      showToast('success', 'Reset Email Sent', `We sent a reset link to ${email}. Check your spam folder.`);
+      return true;
+    } catch (err: any) {
+      console.error("Password reset error: ", err);
+      showToast('error', 'Reset Failed', err.message || 'Unable to send recovery email.');
+      return false;
+    }
   };
 
   // Onboarding complete
@@ -499,46 +542,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Profile modifications
-  const updateProfile = (displayName: string, avatarEmoji: string) => {
-    if (!profile) return;
-    const nextProf = {
-      ...profile,
-      display_name: displayName,
-      avatar_emoji: avatarEmoji
-    };
-    saveProfile(nextProf);
-    triggerHapticFeedback('light');
-    showToast('success', 'Profile Updated', 'Your ADHD brain dashboard avatar and display name are saved!');
+  const updateProfile = async (displayName: string, avatarEmoji: string) => {
+    if (!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    const profileRef = doc(db, 'users', uid);
+    try {
+      await updateDoc(profileRef, {
+        display_name: displayName,
+        avatar_emoji: avatarEmoji
+      });
+      triggerHapticFeedback('light');
+      showToast('success', 'Profile Updated', 'Your ADHD brain dashboard avatar and display name are saved!');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
+    }
   };
 
-  const addXP = (amount: number, reason?: string) => {
-    if (!profile) return;
-    const nextProf = {
-      ...profile,
-      total_xp: profile.total_xp + amount
-    };
-    saveProfile(nextProf);
-    triggerHapticFeedback('success');
-    showToast('success', `+${amount} XP Generated! 🎉`, reason || 'Consistency is your superpower.');
-    
-    // Evaluate if any achievement condition met
-    runAchievementsDiagnostic(nextProf.total_xp, streak?.current_streak || 0, sessions, tasks);
+  const addXP = async (amount: number, reason?: string) => {
+    if (!profile || !auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    const profileRef = doc(db, 'users', uid);
+    const updatedXP = profile.total_xp + amount;
+    try {
+      await updateDoc(profileRef, {
+        total_xp: updatedXP
+      });
+      triggerHapticFeedback('success');
+      showToast('success', `+${amount} XP Generated! 🎉`, reason || 'Consistency is your superpower.');
+      
+      runAchievementsDiagnostic(updatedXP, streak?.current_streak || 0, sessions, tasks);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
+    }
   };
 
   // Routines CRUD
   const createRoutine = (name: string, emoji: string, time_of_day: TimeOfDay): boolean => {
-    // ADHD Check: free tier limits
     if (subscriptionStatus === 'free' && routines.length >= 3) {
       triggerHapticFeedback('error');
-      // Let caller handle showing locking modal
       return false;
     }
+    if (!auth.currentUser) return false;
+    const uid = auth.currentUser.uid;
+    const routineId = `rout-${Math.random().toString(36).substr(2, 9)}`;
 
-    if (!user) return false;
-
-    const newRoutine: Routine = {
-      id: `rout-${Math.random().toString(36).substr(2, 9)}`,
-      user_id: user.email,
+    const newRoutine: Omit<Routine, 'steps'> = {
+      id: routineId,
+      user_id: uid,
       name,
       emoji,
       time_of_day,
@@ -546,205 +596,197 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       reminder_enabled: false,
       reminder_time: '09:00',
       reminder_days: ['M', 'T', 'W', 'T', 'F'],
-      created_at: new Date().toISOString(),
-      steps: []
+      created_at: new Date().toISOString()
     };
 
-    const nextRoutines = [...routines, newRoutine];
-    saveRoutines(nextRoutines);
-    addXP(15, 'Created a newly structured routine draft!');
-    triggerHapticFeedback('success');
+    const runWrite = async () => {
+      try {
+        await setDoc(doc(db, 'routines', routineId), newRoutine);
+        addXP(15, 'Created a newly structured routine draft!');
+        triggerHapticFeedback('success');
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `routines/${routineId}`);
+      }
+    };
+    runWrite();
     return true;
   };
 
-  const updateRoutine = (id: string, updates: Partial<Omit<Routine, 'id' | 'steps'>>) => {
-    const nextRoutines = routines.map((r) => {
-      if (r.id === id) {
-        return { ...r, ...updates };
-      }
-      return r;
-    });
-    saveRoutines(nextRoutines);
-    triggerHapticFeedback('light');
+  const updateRoutine = async (id: string, updates: Partial<Omit<Routine, 'id' | 'steps'>>) => {
+    try {
+      await updateDoc(doc(db, 'routines', id), updates);
+      triggerHapticFeedback('light');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `routines/${id}`);
+    }
   };
 
-  const deleteRoutine = (id: string) => {
-    const nextRoutines = routines.filter((r) => r.id !== id);
-    saveRoutines(nextRoutines);
-    triggerHapticFeedback('medium');
-    showToast('warning', 'Routine Deleted', 'Successfully cleaned up routine from your database.');
+  const deleteRoutine = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'routines', id));
+      triggerHapticFeedback('medium');
+      showToast('warning', 'Routine Deleted', 'Successfully cleaned up routine from your database.');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `routines/${id}`);
+    }
   };
 
-  const createStep = (routineId: string, title: string, duration_minutes: number, emoji: string) => {
-    const nextRoutines = routines.map((r) => {
-      if (r.id === routineId) {
-        const order = r.steps.length;
-        const newStep: RoutineStep = {
-          id: `step-${Math.random().toString(36).substr(2, 9)}`,
-          routine_id: routineId,
-          title,
-          duration_minutes,
-          order_index: order,
-          emoji,
-          created_at: new Date().toISOString()
-        };
-        return {
-          ...r,
-          steps: [...r.steps, newStep]
-        };
-      }
-      return r;
-    });
-    saveRoutines(nextRoutines);
-    addXP(5, `Added focus sprint step: "${title}"`);
-    triggerHapticFeedback('light');
+  const createStep = async (routineId: string, title: string, duration_minutes: number, emoji: string) => {
+    const stepId = `step-${Math.random().toString(36).substr(2, 9)}`;
+    const routine = routines.find(r => r.id === routineId);
+    const orderIndex = routine ? routine.steps.length : 0;
+    
+    const newStep: RoutineStep = {
+      id: stepId,
+      routine_id: routineId,
+      title,
+      duration_minutes,
+      order_index: orderIndex,
+      emoji,
+      created_at: new Date().toISOString()
+    };
+
+    try {
+      await setDoc(doc(db, 'routines', routineId, 'steps', stepId), newStep);
+      addXP(5, `Added focus sprint step: "${title}"`);
+      triggerHapticFeedback('light');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `routines/${routineId}/steps/${stepId}`);
+    }
   };
 
-  const updateStep = (routineId: string, stepId: string, title: string, duration_minutes: number, emoji: string) => {
-    const nextRoutines = routines.map((r) => {
-      if (r.id === routineId) {
-        const updatedSteps = r.steps.map((st) => {
-          if (st.id === stepId) {
-            return { ...st, title, duration_minutes, emoji };
-          }
-          return st;
-        });
-        return {
-          ...r,
-          steps: updatedSteps
-        };
-      }
-      return r;
-    });
-    saveRoutines(nextRoutines);
-    triggerHapticFeedback('light');
+  const updateStep = async (routineId: string, stepId: string, title: string, duration_minutes: number, emoji: string) => {
+    try {
+      await updateDoc(doc(db, 'routines', routineId, 'steps', stepId), {
+        title,
+        duration_minutes,
+        emoji
+      });
+      triggerHapticFeedback('light');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `routines/${routineId}/steps/${stepId}`);
+    }
   };
 
-  const deleteStep = (routineId: string, stepId: string) => {
-    const nextRoutines = routines.map((r) => {
-      if (r.id === routineId) {
-        const remainingSteps = r.steps
-          .filter((st) => st.id !== stepId)
-          .map((st, index) => ({ ...st, order_index: index })); // fix order
-        return {
-          ...r,
-          steps: remainingSteps
-        };
-      }
-      return r;
-    });
-    saveRoutines(nextRoutines);
-    triggerHapticFeedback('medium');
+  const deleteStep = async (routineId: string, stepId: string) => {
+    try {
+      await deleteDoc(doc(db, 'routines', routineId, 'steps', stepId));
+      triggerHapticFeedback('medium');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `routines/${routineId}/steps/${stepId}`);
+    }
   };
 
-  const reorderSteps = (routineId: string, newSteps: RoutineStep[]) => {
-    const nextRoutines = routines.map((r) => {
-      if (r.id === routineId) {
-        const standardizedSteps = newSteps.map((st, index) => ({
-          ...st,
-          order_index: index
-        }));
-        return {
-          ...r,
-          steps: standardizedSteps
-        };
-      }
-      return r;
-    });
-    saveRoutines(nextRoutines);
-    triggerHapticFeedback('light');
+  const reorderSteps = async (routineId: string, newSteps: RoutineStep[]) => {
+    try {
+      const batch = writeBatch(db);
+      newSteps.forEach((st, index) => {
+        const stepRef = doc(db, 'routines', routineId, 'steps', st.id);
+        batch.update(stepRef, { order_index: index });
+      });
+      await batch.commit();
+      triggerHapticFeedback('light');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `routines/${routineId}/steps/reorder`);
+    }
   };
 
   // Planner Tasks CRUD
-  const createTask = (title: string, priority: 'low' | 'medium' | 'high') => {
-    if (!user) return;
+  const createTask = async (title: string, priority: 'low' | 'medium' | 'high') => {
+    if (!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    const taskId = `task-${Math.random().toString(36).substr(2, 9)}`;
+
     const newTask: Task = {
-      id: `task-${Math.random().toString(36).substr(2, 9)}`,
-      user_id: user.email,
+      id: taskId,
+      user_id: uid,
       title,
       is_completed: false,
       due_date: new Date().toISOString().split('T')[0],
       priority,
       created_at: new Date().toISOString()
     };
-    const nextTasks = [newTask, ...tasks];
-    saveTasks(nextTasks);
-    triggerHapticFeedback('light');
-    showToast('success', 'Task Created', `"${title}" has been pinned to today's board.`);
+
+    try {
+      await setDoc(doc(db, 'tasks', taskId), newTask);
+      triggerHapticFeedback('light');
+      showToast('success', 'Task Created', `"${title}" has been pinned to today's board.`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `tasks/${taskId}`);
+    }
   };
 
-  const toggleTask = (id: string) => {
-    let completedState = false;
-    const nextTasks = tasks.map((t) => {
-      if (t.id === id) {
-        completedState = !t.is_completed;
-        return { ...t, is_completed: completedState };
+  const toggleTask = async (id: string) => {
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    const completedState = !task.is_completed;
+
+    try {
+      await updateDoc(doc(db, 'tasks', id), {
+        is_completed: completedState
+      });
+      triggerHapticFeedback(completedState ? 'success' : 'light');
+      if (completedState) {
+        addXP(10, 'Completed daily task checklist item!');
+      } else {
+        showToast('info', 'Task Restored', 'Checked item has been undone.');
       }
-      return t;
-    });
-    saveTasks(nextTasks);
-    triggerHapticFeedback(completedState ? 'success' : 'light');
-    
-    if (completedState) {
-      addXP(10, 'Completed daily task checklist item!');
-    } else {
-      showToast('info', 'Task Restored', 'Checked item has been undone.');
-    }
-
-    // Diagnostics rechecks
-    if (profile) {
-      runAchievementsDiagnostic(profile.total_xp, streak?.current_streak || 0, sessions, nextTasks);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `tasks/${id}`);
     }
   };
 
-  const deleteTask = (id: string) => {
-    const nextTasks = tasks.filter((t) => t.id !== id);
-    saveTasks(nextTasks);
-    triggerHapticFeedback('medium');
-    showToast('info', 'Task Removed', 'Task cleared from temporary registry.');
+  const deleteTask = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'tasks', id));
+      triggerHapticFeedback('medium');
+      showToast('info', 'Task Removed', 'Task cleared from temporary registry.');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `tasks/${id}`);
+    }
   };
 
   // Focus Sessions Logger
-  const createSession = (duration_minutes: number, type: 'pomodoro' | 'custom', completed: boolean) => {
-    if (!user) return;
+  const createSession = async (duration_minutes: number, type: 'pomodoro' | 'custom', completed: boolean) => {
+    if (!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    const sessionId = `session-${Math.random().toString(36).substr(2, 9)}`;
+
     const newSess: FocusSession = {
-      id: `session-${Math.random().toString(36).substr(2, 9)}`,
-      user_id: user.email,
+      id: sessionId,
+      user_id: uid,
       duration_minutes,
       type,
       completed,
       created_at: new Date().toISOString()
     };
-    const nextSessions = [newSess, ...sessions];
-    saveSessions(nextSessions);
 
-    if (completed) {
-      // Completed! Add large XP payload!
-      const bonusXp = type === 'pomodoro' ? 50 : Math.round(duration_minutes * 1.5);
-      addXP(bonusXp, `Completed ${duration_minutes}-min session! ADHD superpower activated! ⚡`);
-      incrementStreak();
-    }
-    
-    // Evaluate achievements
-    if (profile) {
-      runAchievementsDiagnostic(profile.total_xp, streak?.current_streak || 0, nextSessions, tasks);
+    try {
+      await setDoc(doc(db, 'sessions', sessionId), newSess);
+      if (completed) {
+        const bonusXp = type === 'pomodoro' ? 50 : Math.round(duration_minutes * 1.5);
+        addXP(bonusXp, `Completed ${duration_minutes}-min session! ADHD superpower activated! ⚡`);
+        incrementStreak();
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `sessions/${sessionId}`);
     }
   };
 
   // Streak Incrementor
-  const incrementStreak = () => {
-    if (!streak) return;
+  const incrementStreak = async () => {
+    if (!streak || !auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    const streakRef = doc(db, 'streaks', uid);
     const todayStr = new Date().toISOString().split('T')[0];
     
     let current = streak.current_streak;
     let longest = streak.longest_streak;
 
     if (streak.last_active_date === todayStr) {
-      // Already active today, nothing to change
       return;
     }
 
-    // Check if last active was yesterday (continuous) or older
     const lastActive = streak.last_active_date;
     let continuous = false;
 
@@ -764,71 +806,89 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (continuous) {
       current += 1;
     } else {
-      current = 1; // broken, reset to 1
+      current = 1;
     }
 
     if (current > longest) {
       longest = current;
     }
 
-    const nextStreak = {
-      ...streak,
-      current_streak: current,
-      longest_streak: longest,
-      last_active_date: todayStr,
-      updated_at: new Date().toISOString()
-    };
-
-    saveStreak(nextStreak);
-    
-    if (current > streak.current_streak) {
-      showToast('success', `🔥 ${current}-Day Streak!`, "You are on absolute consistency fire! Keep it rolling.");
+    try {
+      await updateDoc(streakRef, {
+        current_streak: current,
+        longest_streak: longest,
+        last_active_date: todayStr,
+        updated_at: new Date().toISOString()
+      });
+      if (current > streak.current_streak) {
+        showToast('success', `🔥 ${current}-Day Streak!`, "You are on absolute consistency fire! Keep it rolling.");
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `streaks/${uid}`);
     }
   };
 
-  // Subscriptions purchase mocks (RevenueCat implementation)
+  // Subscriptions purchase mocks (Direct integration inside secure production Firestore!)
   const purchaseMonthly = async (): Promise<boolean> => {
+    if (!auth.currentUser) return false;
+    const uid = auth.currentUser.uid;
     setLoading(true);
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        setSubscriptionStatus('premium');
-        localStorage.setItem('focusflow_subscription_status', 'premium');
-        setLoading(false);
-        triggerHapticFeedback('success');
-        playBellNotification('complete');
-        showToast('success', '👑 Premium Active!', 'Thank you! Premium has been unlocked. Unlimited routines + Ad free!');
-        resolve(true);
-      }, 1000);
-    });
+    try {
+      await updateDoc(doc(db, 'users', uid), {
+        premium_status: 'premium'
+      });
+      setSubscriptionStatus('premium');
+      setLoading(false);
+      triggerHapticFeedback('success');
+      playBellNotification('complete');
+      showToast('success', '👑 Premium Active!', 'Thank you! Premium has been unlocked. Unlimited routines + Ad free!');
+      return true;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
+      setLoading(false);
+      return false;
+    }
   };
 
   const purchaseYearly = async (): Promise<boolean> => {
+    if (!auth.currentUser) return false;
+    const uid = auth.currentUser.uid;
     setLoading(true);
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        setSubscriptionStatus('premium');
-        localStorage.setItem('focusflow_subscription_status', 'premium');
-        setLoading(false);
-        triggerHapticFeedback('success');
-        playBellNotification('complete');
-        showToast('success', '👑 Premium Active!', 'Outstanding choice! Annual membership is activated (3 days trial started)');
-        resolve(true);
-      }, 1000);
-    });
+    try {
+      await updateDoc(doc(db, 'users', uid), {
+        premium_status: 'premium'
+      });
+      setSubscriptionStatus('premium');
+      setLoading(false);
+      triggerHapticFeedback('success');
+      playBellNotification('complete');
+      showToast('success', '👑 Premium Active!', 'Outstanding choice! Annual membership is activated (3 days trial started)');
+      return true;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
+      setLoading(false);
+      return false;
+    }
   };
 
   const restorePurchases = async (): Promise<boolean> => {
+    if (!auth.currentUser) return false;
+    const uid = auth.currentUser.uid;
     setLoading(true);
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        setSubscriptionStatus('premium');
-        localStorage.setItem('focusflow_subscription_status', 'premium');
-        setLoading(false);
-        triggerHapticFeedback('success');
-        showToast('success', 'Purchases Restored', 'We recovered your previous active entitlement and premium state!');
-        resolve(true);
-      }, 800);
-    });
+    try {
+      await updateDoc(doc(db, 'users', uid), {
+        premium_status: 'premium'
+      });
+      setSubscriptionStatus('premium');
+      setLoading(false);
+      triggerHapticFeedback('success');
+      showToast('success', 'Purchases Restored', 'We recovered your previous active entitlement and premium state!');
+      return true;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
+      setLoading(false);
+      return false;
+    }
   };
 
   const unlockAchievement = (id: string) => {

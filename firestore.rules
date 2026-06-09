@@ -1,0 +1,170 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global safety net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Global Helpers ---
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Enterprise Level Schema Blueprint Validators ---
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['id', 'user_id', 'display_name', 'avatar_emoji', 'total_xp', 'created_at'])
+        && data.id is string && data.id.size() <= 128
+        && data.user_id is string && data.user_id == request.auth.uid
+        && data.display_name is string && data.display_name.size() <= 100
+        && data.avatar_emoji is string && data.avatar_emoji.size() <= 10
+        && data.total_xp is int && data.total_xp >= 0
+        && data.created_at is string;
+    }
+
+    function isValidRoutine(data) {
+      return data.keys().hasAll(['id', 'user_id', 'name', 'emoji', 'time_of_day', 'is_active', 'created_at'])
+        && data.id is string && data.id.size() <= 128
+        && data.user_id is string && data.user_id == request.auth.uid
+        && data.name is string && data.name.size() <= 150
+        && data.emoji is string && data.emoji.size() <= 10
+        && data.time_of_day is string && data.time_of_day in ['morning', 'afternoon', 'evening']
+        && data.is_active is bool
+        && data.created_at is string;
+    }
+
+    function isValidRoutineStep(data) {
+      return data.keys().hasAll(['id', 'routine_id', 'title', 'duration_minutes', 'order_index', 'emoji', 'created_at'])
+        && data.id is string && data.id.size() <= 128
+        && data.routine_id is string && data.routine_id.size() <= 128
+        && data.title is string && data.title.size() <= 150
+        && data.duration_minutes is int && data.duration_minutes >= 0 && data.duration_minutes <= 1440
+        && data.order_index is int && data.order_index >= 0
+        && data.emoji is string && data.emoji.size() <= 10
+        && data.created_at is string;
+    }
+
+    function isValidTask(data) {
+      return data.keys().hasAll(['id', 'user_id', 'title', 'is_completed', 'priority', 'created_at'])
+        && data.id is string && data.id.size() <= 128
+        && data.user_id is string && data.user_id == request.auth.uid
+        && data.title is string && data.title.size() <= 200
+        && data.is_completed is bool
+        && data.priority is string && data.priority in ['low', 'medium', 'high']
+        && data.created_at is string;
+    }
+
+    function isValidFocusSession(data) {
+      return data.keys().hasAll(['id', 'user_id', 'duration_minutes', 'type', 'completed', 'created_at'])
+        && data.id is string && data.id.size() <= 128
+        && data.user_id is string && data.user_id == request.auth.uid
+        && data.duration_minutes is int && data.duration_minutes >= 0
+        && data.type is string && data.type in ['pomodoro', 'custom']
+        && data.completed is bool
+        && data.created_at is string;
+    }
+
+    function isValidStreak(data) {
+      return data.keys().hasAll(['id', 'user_id', 'current_streak', 'longest_streak', 'last_active_date', 'updated_at'])
+        && data.id is string && data.id.size() <= 128
+        && data.user_id is string && data.user_id == request.auth.uid
+        && data.current_streak is int && data.current_streak >= 0
+        && data.longest_streak is int && data.longest_streak >= 0
+        && data.last_active_date is string
+        && data.updated_at is string;
+    }
+
+    // --- Entity Specific Operations ---
+
+    // 1. User Profiles Collection
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming());
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) 
+        && incoming().user_id == existing().user_id 
+        && incoming().created_at == existing().created_at
+        && (!incoming().keys().hasAny(['premium_status']) || incoming().premium_status == existing().premium_status);
+      allow delete: if isOwner(userId);
+    }
+
+    // 2. Routines Collection
+    match /routines/{routineId} {
+      allow get: if isSignedIn() && isValidId(routineId) && resource.data.user_id == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(routineId) && isValidRoutine(incoming());
+      allow update: if isSignedIn() && isValidId(routineId) && isValidRoutine(incoming())
+        && existing().user_id == request.auth.uid
+        && incoming().user_id == existing().user_id
+        && incoming().created_at == existing().created_at;
+      allow delete: if isSignedIn() && isValidId(routineId) && existing().user_id == request.auth.uid;
+
+      // 3. Sub-collection: Steps inside Routine (Master Gate Pattern)
+      match /steps/{stepId} {
+        allow get: if isSignedIn() && isValidId(stepId)
+          && get(/databases/$(database)/documents/routines/$(routineId)).data.user_id == request.auth.uid;
+        allow list: if isSignedIn()
+          && get(/databases/$(database)/documents/routines/$(routineId)).data.user_id == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(stepId) && isValidRoutineStep(incoming())
+          && get(/databases/$(database)/documents/routines/$(routineId)).data.user_id == request.auth.uid;
+        allow update: if isSignedIn() && isValidId(stepId) && isValidRoutineStep(incoming())
+          && get(/databases/$(database)/documents/routines/$(routineId)).data.user_id == request.auth.uid
+          && incoming().routine_id == existing().routine_id
+          && incoming().created_at == existing().created_at;
+        allow delete: if isSignedIn() && isValidId(stepId)
+          && get(/databases/$(database)/documents/routines/$(routineId)).data.user_id == request.auth.uid;
+      }
+    }
+
+    // 4. Tasks Collection
+    match /tasks/{taskId} {
+      allow get: if isSignedIn() && isValidId(taskId) && resource.data.user_id == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(taskId) && isValidTask(incoming());
+      allow update: if isSignedIn() && isValidId(taskId) && isValidTask(incoming())
+        && existing().user_id == request.auth.uid
+        && incoming().user_id == existing().user_id
+        && incoming().created_at == existing().created_at;
+      allow delete: if isSignedIn() && isValidId(taskId) && existing().user_id == request.auth.uid;
+    }
+
+    // 5. Sessions Collection
+    match /sessions/{sessionId} {
+      allow get: if isSignedIn() && isValidId(sessionId) && resource.data.user_id == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(sessionId) && isValidFocusSession(incoming());
+      allow update: if isSignedIn() && isValidId(sessionId) && isValidFocusSession(incoming())
+        && existing().user_id == request.auth.uid
+        && incoming().user_id == existing().user_id
+        && incoming().created_at == existing().created_at;
+      allow delete: if isSignedIn() && isValidId(sessionId) && existing().user_id == request.auth.uid;
+    }
+
+    // 6. Streaks Collection
+    match /streaks/{streakId} {
+      allow get: if isSignedIn() && isValidId(streakId) && resource.data.user_id == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(streakId) && isValidStreak(incoming());
+      allow update: if isSignedIn() && isValidId(streakId) && isValidStreak(incoming())
+        && existing().user_id == request.auth.uid
+        && incoming().user_id == existing().user_id;
+      allow delete: if isSignedIn() && isValidId(streakId) && existing().user_id == request.auth.uid;
+    }
+  }
+}

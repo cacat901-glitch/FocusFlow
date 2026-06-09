@@ -1,0 +1,121 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account profile with XP progress",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique profile identifier" },
+        "user_id": { "type": "string", "description": "Owner user ID" },
+        "display_name": { "type": "string", "description": "User display name" },
+        "avatar_emoji": { "type": "string", "description": "Chosen profile emoji avatar" },
+        "total_xp": { "type": "integer", "description": "Accrued game experience points" },
+        "created_at": { "type": "string", "format": "date-time", "description": "Account setup timestamp" },
+        "premium_status": { "type": "string", "enum": ["free", "premium"], "description": "Entitlement status for premium tiers" }
+      },
+      "required": ["id", "user_id", "display_name", "avatar_emoji", "total_xp", "created_at"]
+    },
+    "Routine": {
+      "title": "Routine",
+      "description": "A scheduled routine that consists of visual steps to assist ADHD brains",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique routine identifier" },
+        "user_id": { "type": "string", "description": "Owner user ID" },
+        "name": { "type": "string", "description": "Name of the routine" },
+        "emoji": { "type": "string", "description": "Visual indicator emoji" },
+        "time_of_day": { "type": "string", "enum": ["morning", "afternoon", "evening"], "description": "Time of day bracket" },
+        "is_active": { "type": "boolean", "description": "Active state switch" },
+        "reminder_enabled": { "type": "boolean", "description": "Whether alarm triggers exist" },
+        "reminder_time": { "type": "string", "description": "HH:MM format string" },
+        "reminder_days": { "type": "array", "description": "Array of active days (M, T, W, etc)" },
+        "created_at": { "type": "string", "format": "date-time", "description": "Timestamp of routine setup" }
+      },
+      "required": ["id", "user_id", "name", "emoji", "time_of_day", "is_active", "created_at"]
+    },
+    "RoutineStep": {
+      "title": "RoutineStep",
+      "description": "A single modular granular step inside a custom routine",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique step identifier" },
+        "routine_id": { "type": "string", "description": "ID of parent routine" },
+        "title": { "type": "string", "description": "Step visual prompt" },
+        "duration_minutes": { "type": "integer", "description": "Focus sprint timer interval" },
+        "order_index": { "type": "integer", "description": "Sequence position for routines sorting" },
+        "emoji": { "type": "string", "description": "Emoji indicator" },
+        "created_at": { "type": "string", "format": "date-time", "description": "Step creation timestamp" }
+      },
+      "required": ["id", "routine_id", "title", "duration_minutes", "order_index", "emoji", "created_at"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "An organized planner task checklist item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique task identifier" },
+        "user_id": { "type": "string", "description": "Owner user ID" },
+        "title": { "type": "string", "description": "Description index of task" },
+        "is_completed": { "type": "boolean", "description": "Complete status flag" },
+        "due_date": { "type": "string", "description": "YYYY-MM-DD target date placeholder" },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"], "description": "Checklist priority indicator" },
+        "created_at": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["id", "user_id", "title", "is_completed", "priority", "created_at"]
+    },
+    "FocusSession": {
+      "title": "FocusSession",
+      "description": "A completed task/pomodoro mindfulness session",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Session identifier" },
+        "user_id": { "type": "string", "description": "Owner user ID" },
+        "duration_minutes": { "type": "integer", "description": "Logged focus time in minutes" },
+        "type": { "type": "string", "enum": ["pomodoro", "custom"], "description": "Type of focus sprint timer" },
+        "completed": { "type": "boolean", "description": "Whether the timer successfully run to completion" },
+        "created_at": { "type": "string", "format": "date-time", "description": "Logging timestamp" }
+      },
+      "required": ["id", "user_id", "duration_minutes", "type", "completed", "created_at"]
+    },
+    "Streak": {
+      "title": "Streak",
+      "description": "User consistency streak metrics",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique streak metrics identifier" },
+        "user_id": { "type": "string", "description": "Associated user ID" },
+        "current_streak": { "type": "integer", "description": "Current active streak" },
+        "longest_streak": { "type": "integer", "description": "Longest visual streak milestone" },
+        "last_active_date": { "type": "string", "description": "YYYY-MM-DD last active timestamp" },
+        "updated_at": { "type": "string", "format": "date-time", "description": "Last timestamp sync" }
+      },
+      "required": ["id", "user_id", "current_streak", "longest_streak", "last_active_date", "updated_at"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profiles database"
+    },
+    "/routines/{routineId}": {
+      "schema": { "$ref": "#/entities/Routine" },
+      "description": "Top-level shared routines configured"
+    },
+    "/routines/{routineId}/steps/{stepId}": {
+      "schema": { "$ref": "#/entities/RoutineStep" },
+      "description": "Granular action list steps inside particular routines"
+    },
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "Planner checking board tasks"
+    },
+    "/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/FocusSession" },
+      "description": "Completed visual pomodoro sessions logs"
+    },
+    "/streaks/{streakId}": {
+      "schema": { "$ref": "#/entities/Streak" },
+      "description": "Consistency streaks logs"
+    }
+  }
+}
