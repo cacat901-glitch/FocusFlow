@@ -1,0 +1,6 @@
+{
+  "name": "FocusFlow",
+  "description": "An intuitive ADHD-friendly routine planner and focus sprint timer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
